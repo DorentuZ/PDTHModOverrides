@@ -155,8 +155,45 @@ struct DB {
     });
   }
 
+  template<typename T>
+  inline void clone_vector(Vector<T>& dst, const Vector<T>& src, Allocator* alloc)
+  {
+      dst._size = src._size;
+      dst._capacity = src._size;
+      dst._allocator = alloc;
+
+      if (src._size == 0) {
+          dst._data = nullptr;
+          return;
+      }
+
+      dst._data = (T*)alloc->allocate_aligned(sizeof(T) * src._size, 8);
+      memcpy(dst._data, src._data, sizeof(T) * src._size);
+  }
+
   X86_THISCALL_HOOK_HELPER_DEFINE_FUNCTION(DB, load, int, CONCAT_ARGS()) {
     auto ret = (this->*o_load)();
+
+    // replace statically assigned vector with a copy we can modify
+    {
+        Allocator* allocator = (Allocator*)((char*)this + 4);
+
+        Data* old_data = this->_data;
+        Data* new_data = (Data*)allocator->allocate_aligned(sizeof(Data), 4);
+
+        clone_vector(new_data->_properties._data, old_data->_properties._data, allocator);
+        memcpy(new_data->_properties._less, old_data->_properties._less, 4);
+        new_data->_properties._is_sorted = old_data->_properties._is_sorted;
+
+        clone_vector(new_data->_lookup._data, old_data->_lookup._data, allocator);
+        memcpy(new_data->_lookup._less, old_data->_lookup._less, 4);
+        new_data->_lookup._is_sorted = old_data->_lookup._is_sorted;
+
+        new_data->_next_key = old_data->_next_key;
+
+        this->_data = new_data;
+        allocator->deallocate(old_data);
+    }
 
     for (auto& hook : extraDBLoadHooks) {
       if(hook)
@@ -268,10 +305,6 @@ struct TwoLayerTransport {
 DB* globalDb = nullptr;
 void ModOverridesState::CollectModOverrides(DB* dieselDb) {
   globalDb = dieselDb;
-  auto& data = dieselDb->_data->_lookup._data;
-  // Blob loaded arrays get a dummy allocator that will never make allocations.
-  // Changing the allocator to the one used to create the array.
-  data._allocator = (Allocator*)((char*)dieselDb + 4);
 
   this->overrides.clear();
 
